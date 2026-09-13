@@ -60,6 +60,10 @@ public class FlappyGame
 	private int height = 480;
 	private int gapSize = 110;
 	private double speed = 1.9;
+	/** Max vertical travel of the gap centre between consecutive traps. */
+	private int maxGapStep = GAP_BAND_HEIGHT;
+	/** Previous trap's gap centre, or -1 when the next roll is free. */
+	private int lastGapCenter = -1;
 
 	private int readyTicks;
 	private double chinY = playFloor() / 2.0;
@@ -88,10 +92,11 @@ public class FlappyGame
 		}
 	}
 
-	public void setDifficulty(int gapSize, double speed)
+	public void setDifficulty(int gapSize, double speed, int maxGapStep)
 	{
 		this.gapSize = gapSize;
 		this.speed = speed;
+		this.maxGapStep = maxGapStep;
 	}
 
 	public void setTrapInvincible(boolean trapInvincible)
@@ -137,7 +142,8 @@ public class FlappyGame
 		{
 			case READY:
 				readyTicks++;
-				chinY = playFloor() / 2.0 + Math.sin(readyTicks * 0.09) * 5.0;
+				// StrictMath: the bob height seeds the launch height, and duels replay it on other machines.
+				chinY = playFloor() / 2.0 + StrictMath.sin(readyTicks * 0.09) * 5.0;
 				break;
 			case RUNNING:
 				stepPhysics();
@@ -161,6 +167,7 @@ public class FlappyGame
 		state = State.RUNNING;
 		deathCause = null;
 		traps.clear();
+		lastGapCenter = -1;
 		score = 0;
 		deadTicks = 0;
 		chinVy = FLAP_VELOCITY;
@@ -217,7 +224,16 @@ public class FlappyGame
 			// Viewport too small for margins - centre the gap and carry on.
 			return mid;
 		}
-		return lo + rng.nextInt(hi - lo + 1);
+		if (lastGapCenter >= 0)
+		{
+			// Each gap stays reachable: the centre may travel at most
+			// maxGapStep from the previous trap's.
+			final int anchor = Math.max(lo, Math.min(hi, lastGapCenter));
+			lo = Math.max(lo, anchor - maxGapStep);
+			hi = Math.min(hi, anchor + maxGapStep);
+		}
+		lastGapCenter = lo + rng.nextInt(hi - lo + 1);
+		return lastGapCenter;
 	}
 
 	private void checkCollisions()

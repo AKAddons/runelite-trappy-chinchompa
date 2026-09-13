@@ -9,6 +9,10 @@ import com.trappychinchompa.RunResult;
 import com.trappychinchompa.TrappyChinchompaConfig;
 import com.trappychinchompa.TrappyChinchompaPlugin;
 import com.trappychinchompa.UnlockState;
+import com.trappychinchompa.duel.DuelController;
+import com.trappychinchompa.duel.DuelRecord;
+import com.trappychinchompa.duel.DuelRun;
+import com.trappychinchompa.duel.DuelViewport;
 import com.trappychinchompa.game.BackgroundTheme;
 import com.trappychinchompa.game.BoxTrap;
 import com.trappychinchompa.game.ChinSkin;
@@ -24,6 +28,7 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.GraphicsConfiguration;
 import java.awt.Image;
+import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.Transparency;
@@ -159,7 +164,12 @@ class GameCanvas extends JPanel
 	private final SpriteManager spriteManager;
 	private final TrappyChinchompaConfig config;
 
-	private final FlappyGame game = new FlappyGame(new Random());
+	/** Solo: a fresh random game. In a duel: the DuelRun's seeded game on the fixed viewport. */
+	private FlappyGame game = new FlappyGame(new Random());
+	private DuelRun duelRun;
+	private String duelId;
+	private int duelGameIndex;
+	private boolean duelReported;
 	private final Timer timer = new Timer(FRAME_MS, this::onFrame);
 	private long lastTickNanos;
 
@@ -256,6 +266,11 @@ class GameCanvas extends JPanel
 			public void mousePressed(MouseEvent e)
 			{
 				requestFocusInWindow();
+				if (duelRun != null)
+				{
+					handleDuelPlayClick(DuelViewport.fit(getWidth(), getHeight()).toDuel(e.getPoint()));
+					return;
+				}
 				if (game.getState() == FlappyGame.State.READY)
 				{
 					if (statsSnapshot != null)
@@ -341,6 +356,23 @@ class GameCanvas extends JPanel
 			}
 		});
 		getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("pressed SPACE"), "flap");
+		getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("pressed ENTER"), "advance");
+		getActionMap().put("advance", new AbstractAction()
+		{
+			@Override
+			public void actionPerformed(ActionEvent e)
+			{
+				// Enter clears a finished game: the duel's Next game / Back, or a solo restart.
+				if (duelRun != null)
+				{
+					advanceDuel();
+				}
+				else if (game.getState() == FlappyGame.State.DEAD && game.canRestart())
+				{
+					flap();
+				}
+			}
+		});
 		getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("pressed UP"), "flap");
 		getActionMap().put("flap", new AbstractAction()
 		{
@@ -355,14 +387,20 @@ class GameCanvas extends JPanel
 			@Override
 			public void componentResized(ComponentEvent e)
 			{
-				game.setViewport(getWidth(), getHeight());
+				if (duelRun == null)
+				{
+					game.setViewport(getWidth(), getHeight());
+				}
 			}
 		});
 	}
 
 	void start()
 	{
-		game.setViewport(getWidth(), getHeight());
+		if (duelRun == null)
+		{
+			game.setViewport(getWidth(), getHeight());
+		}
 		lastTickNanos = System.nanoTime();
 		timer.start();
 	}
@@ -538,6 +576,11 @@ class GameCanvas extends JPanel
 
 	private void flap()
 	{
+		if (duelRun != null)
+		{
+			duelFlap();
+			return;
+		}
 		if (game.getState() == FlappyGame.State.READY)
 		{
 			statsSnapshot = null;
@@ -548,7 +591,8 @@ class GameCanvas extends JPanel
 			runZone = resolveTheme();
 			runSkin = currentSkin();
 			runSandbox = game.isTrapInvincible();
-			game.setDifficulty(runDifficulty.getGapSize(), runDifficulty.getSpeed());
+			game.setDifficulty(runDifficulty.getGapSize(), runDifficulty.getSpeed(),
+				runDifficulty.getMaxGapStep());
 		}
 		game.flap();
 	}
@@ -596,7 +640,14 @@ class GameCanvas extends JPanel
 
 	private void advanceOneTick()
 	{
-		game.tick();
+		if (duelRun != null)
+		{
+			duelRun.tick();
+		}
+		else
+		{
+			game.tick();
+		}
 		if (game.getState() == FlappyGame.State.RUNNING || game.getState() == FlappyGame.State.READY)
 		{
 			groundScroll = (groundScroll + game.getSpeed()) % 24;
@@ -640,6 +691,15 @@ class GameCanvas extends JPanel
 		if (game.getState() == FlappyGame.State.DEAD && lastState == FlappyGame.State.RUNNING)
 		{
 			onRunEnded();
+		}
+		if (duelRun != null && duelRun.ended() && !duelReported)
+		{
+			duelReported = true;
+			final DuelController d = duels();
+			if (d != null && duelId != null)
+			{
+				d.gameEnded(duelId, duelGameIndex, duelRun.score(), duelRun.flapTicks(), duelRun.totalTicks());
+			}
 		}
 		if (levelBannerTicks > 0)
 		{
@@ -826,42 +886,62 @@ class GameCanvas extends JPanel
 		final Graphics2D g2 = (Graphics2D) g.create();
 		try
 		{
-			final int floor = h - FlappyGame.GROUND_HEIGHT;
-			final BackgroundTheme theme = resolveTheme();
-			final Palette palette = PALETTES.get(theme);
-			if (backdropCache == null || backdropTheme != theme
-				|| backdropCache.getWidth() != w || backdropCache.getHeight() != floor)
+			if (duelRun != null)
 			{
-				final GraphicsConfiguration gc = getGraphicsConfiguration();
-				backdropCache = gc != null
-					? gc.createCompatibleImage(w, floor, Transparency.OPAQUE)
-					: new BufferedImage(w, floor, BufferedImage.TYPE_INT_RGB);
-				final Graphics2D bg = backdropCache.createGraphics();
-				try
-				{
-					paintSky(bg, w, floor, theme, palette);
-				}
-				finally
-				{
-					bg.dispose();
-				}
-				backdropTheme = theme;
+				// Duels simulate on a fixed 242x480 world; the panel shows
+				// it letterboxed so both players see the same traps.
+				final DuelViewport vp = DuelViewport.fit(w, h);
+				g2.setColor(Color.BLACK);
+				g2.fillRect(0, 0, w, h);
+				g2.translate(vp.getOffsetX(), vp.getOffsetY());
+				g2.scale(vp.getScale(), vp.getScale());
+				g2.clipRect(0, 0, DuelRun.WIDTH, DuelRun.HEIGHT);
+				paintWorld(g2, DuelRun.WIDTH, DuelRun.HEIGHT);
 			}
-			g2.drawImage(backdropCache, 0, 0, null);
-			paintTraps(g2, floor);
-			paintGround(g2, w, h, floor, theme, palette, (int) groundScroll);
-			paintChin(g2);
-			paintXpDrops(g2);
-			paintHud(g2, w, h);
-			paintAchievementBanner(g2, w);
-			if (UnlockState.isDevUnlockAll() || game.isTrapInvincible())
+			else
 			{
-				paintDebugWatermark(g2, w, h);
+				paintWorld(g2, w, h);
 			}
 		}
 		finally
 		{
 			g2.dispose();
+		}
+	}
+
+	private void paintWorld(Graphics2D g2, int w, int h)
+	{
+		final int floor = h - FlappyGame.GROUND_HEIGHT;
+		final BackgroundTheme theme = resolveTheme();
+		final Palette palette = PALETTES.get(theme);
+		if (backdropCache == null || backdropTheme != theme
+			|| backdropCache.getWidth() != w || backdropCache.getHeight() != floor)
+		{
+			final GraphicsConfiguration gc = getGraphicsConfiguration();
+			backdropCache = gc != null
+				? gc.createCompatibleImage(w, floor, Transparency.OPAQUE)
+				: new BufferedImage(w, floor, BufferedImage.TYPE_INT_RGB);
+			final Graphics2D bg = backdropCache.createGraphics();
+			try
+			{
+				paintSky(bg, w, floor, theme, palette);
+			}
+			finally
+			{
+				bg.dispose();
+			}
+			backdropTheme = theme;
+		}
+		g2.drawImage(backdropCache, 0, 0, null);
+		paintTraps(g2, floor);
+		paintGround(g2, w, h, floor, theme, palette, (int) groundScroll);
+		paintChin(g2);
+		paintXpDrops(g2);
+		paintHud(g2, w, h);
+		paintAchievementBanner(g2, w);
+		if (UnlockState.isDevUnlockAll() || game.isTrapInvincible())
+		{
+			paintDebugWatermark(g2, w, h);
 		}
 	}
 
@@ -917,6 +997,182 @@ class GameCanvas extends JPanel
 		return new Rectangle(x, getHeight() - 62 + row * 30, bw, 24);
 	}
 
+	// ---- duels: one game at a time, from the dock ----
+
+	private DuelController duels()
+	{
+		return plugin.getDuels();
+	}
+
+	boolean isSandbox()
+	{
+		return game.isTrapInvincible();
+	}
+
+	void notice(String text)
+	{
+		spawnXpDrop(text, TEXT_YELLOW);
+		repaint();
+	}
+
+	/** The dock pressed Play: the duel's next game on the fixed world. */
+	void startDuelGame(DuelRecord record)
+	{
+		final int index = record.nextGame();
+		if (index == 0 || record.getRules() == null)
+		{
+			return;
+		}
+		duelId = record.getId();
+		duelGameIndex = index;
+		duelRun = new DuelRun(record.seed(index), record.getRules());
+		game = duelRun.game();
+		duelReported = false;
+		lastState = FlappyGame.State.READY;
+		lastResult = null;
+		statsSnapshot = null;
+		xpDrops.clear();
+		backdropCache = null;
+		// The dock's button had the keyboard; Space must launch without a click first.
+		requestFocusInWindow();
+		repaint();
+	}
+
+	private DuelRecord duelRecord()
+	{
+		final DuelController d = duels();
+		return d == null || duelId == null ? null : d.getLedger().get(duelId);
+	}
+
+	private void duelFlap()
+	{
+		if (duelRun.ended())
+		{
+			// Space after the kaboom does what the button does.
+			advanceDuel();
+			return;
+		}
+		if (game.getState() == FlappyGame.State.READY)
+		{
+			final DuelRecord r = duelRecord();
+			statsSnapshot = null;
+			runAchievementCount = 0;
+			runDifficulty = r == null || r.getRules() == null ? config.difficulty() : r.getRules().getDifficulty();
+			runZone = resolveTheme();
+			runSkin = currentSkin();
+			runSandbox = false;
+		}
+		duelRun.flap();
+	}
+
+	/** After a duel game: the next game of the stretch if there is one, else back to the start screen. */
+	private void advanceDuel()
+	{
+		if (duelRun == null || !duelRun.ended() || game.getTicksSinceDeath() <= EXPLOSION_TICKS)
+		{
+			return;
+		}
+		final DuelRecord r = duelRecord();
+		final DuelController d = duels();
+		if (r != null && d != null && r.nextGame() > 0 && r.nextGame() != duelGameIndex)
+		{
+			// Next game: the relay reveals its seed, then the panel starts it.
+			final DuelRecord next = d.play(r.getId());
+			if (next != null)
+			{
+				startDuelGame(next);
+			}
+			return;
+		}
+		exitDuel();
+	}
+
+	private void handleDuelPlayClick(Point p)
+	{
+		if (duelRun.ended() && game.getTicksSinceDeath() > EXPLOSION_TICKS)
+		{
+			if (duelNextButton().contains(p))
+			{
+				advanceDuel();
+			}
+			return;
+		}
+		if (duelForfeitButton().contains(p))
+		{
+			final DuelController d = duels();
+			if (d != null && duelId != null)
+			{
+				d.concede(duelId);
+			}
+			exitDuel();
+			return;
+		}
+		duelFlap();
+	}
+
+	/** Back to the solo start screen with a fresh random game. */
+	private void exitDuel()
+	{
+		final DuelController d = duels();
+		if (d != null)
+		{
+			d.stopPlaying();
+		}
+		duelRun = null;
+		duelId = null;
+		game = new FlappyGame(new Random());
+		game.setViewport(getWidth(), getHeight());
+		lastState = FlappyGame.State.READY;
+		lastResult = null;
+		backdropCache = null;
+		xpDrops.clear();
+		refreshFromConfig();
+	}
+
+	private Rectangle duelForfeitButton()
+	{
+		return new Rectangle(DuelRun.WIDTH - 62, 6, 56, 20);
+	}
+
+	private Rectangle duelNextButton()
+	{
+		return new Rectangle(DuelRun.WIDTH / 2 - 62, DuelRun.HEIGHT - 78, 124, 22);
+	}
+
+	private void paintDuelHud(Graphics2D g2, int w, int h)
+	{
+		final DuelRecord r = duelRecord();
+		final String them = r == null ? "?" : r.getOpponent();
+		final String label = "vs " + them + " - " + (r == null ? "game " + duelGameIndex : r.gameLabel(duelGameIndex));
+		final int cx = w / 2;
+		switch (game.getState())
+		{
+			case READY:
+				shadowText(g2, label, fontBody, TEXT_YELLOW, cx, 40);
+				if (r != null && r.getRules() != null)
+				{
+					shadowText(g2, r.getRules().describe(), fontSmall, TEXT_GREY, cx, 60);
+				}
+				shadowText(g2, "Click / Space to launch", fontBody, TEXT_WHITE, cx, 84);
+				paintPickerButton(g2, duelForfeitButton(), "Forfeit", TEXT_WHITE);
+				break;
+			case RUNNING:
+				shadowText(g2, label, fontSmall, TEXT_GREY, cx - 20, 20);
+				shadowText(g2, String.valueOf(game.getScore()), fontBig, TEXT_YELLOW, cx, 48);
+				paintPickerButton(g2, duelForfeitButton(), "Forfeit", TEXT_WHITE);
+				break;
+			case DEAD:
+			default:
+				paintDeathPanel(g2, w, h);
+				if (game.getTicksSinceDeath() > EXPLOSION_TICKS)
+				{
+					final boolean more = r != null && r.nextGame() > 0 && r.nextGame() != duelGameIndex;
+					paintPickerButton(g2, duelNextButton(), more ? "Next game" : "Back", TEXT_YELLOW);
+				}
+				break;
+		}
+	}
+
 	/** Lifetime tallies per difficulty, over the ready screen. */
 	/** Card geometry shared by the painter and the click handler. */
 	private Rectangle statsCardBounds()
@@ -958,7 +1214,7 @@ class GameCanvas extends JPanel
 				+ s.getRuns() + (s.getRuns() == 1 ? " run" : " runs"),
 				fontBody, difficultyColor(difficulties[i]), cx, y);
 			y += 16;
-			shadowText(g2, "best " + s.getBest() + ", "
+			shadowText(g2, "best " + s.getBest() + ", avg " + s.averageText() + ", "
 				+ formatTenths(s.getXpTenths()) + " xp", fontSmall, TEXT_GREY, cx, y);
 		}
 		y += 24;
@@ -1658,6 +1914,11 @@ class GameCanvas extends JPanel
 	{
 		g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
 			RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+		if (duelRun != null)
+		{
+			paintDuelHud(g2, w, h);
+			return;
+		}
 		switch (game.getState())
 		{
 			case READY:
@@ -1769,7 +2030,7 @@ class GameCanvas extends JPanel
 				: achievementCount + " achievements earned!", fontSmall, TEXT_YELLOW, cx, y);
 		}
 		y += 22;
-		if (game.canRestart())
+		if (game.canRestart() && duelRun == null)
 		{
 			shadowText(g2, "Click to go again", fontSmall, TEXT_WHITE, cx, y);
 		}

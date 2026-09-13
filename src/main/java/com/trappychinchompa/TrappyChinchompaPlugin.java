@@ -2,11 +2,22 @@ package com.trappychinchompa;
 
 import com.google.common.base.MoreObjects;
 import com.google.inject.Provides;
+import com.trappychinchompa.duel.DuelChat;
+import com.trappychinchompa.duel.DuelCommand;
+import com.trappychinchompa.duel.DuelController;
+import com.trappychinchompa.duel.DuelRecord;
+import com.trappychinchompa.duel.DuelResultText;
+import com.trappychinchompa.duel.DuelRules;
+import com.trappychinchompa.duel.OkHttpSocket;
 import com.trappychinchompa.game.BackgroundTheme;
 import com.trappychinchompa.game.ChinSkin;
 import com.trappychinchompa.game.HunterXp;
 import com.trappychinchompa.ui.TrappyChinchompaPanel;
 import java.awt.image.BufferedImage;
+import java.security.SecureRandom;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -16,6 +27,16 @@ import javax.inject.Inject;
 import javax.inject.Named;
 import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
+import net.runelite.api.ChatMessageType;
+import net.runelite.api.Client;
+import net.runelite.api.GameState;
+import net.runelite.api.Player;
+import net.runelite.api.events.CommandExecuted;
+import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.events.GameTick;
+import net.runelite.api.events.MenuEntryAdded;
+import net.runelite.client.chat.ChatMessageManager;
+import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -30,6 +51,7 @@ import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ImageUtil;
 import net.runelite.client.util.Text;
+import okhttp3.OkHttpClient;
 
 @PluginDescriptor(
 	name = "Trappy Chinchompa",
@@ -43,6 +65,7 @@ public class TrappyChinchompaPlugin extends Plugin
 	private static final String KEY_STAT_RUNS = "runs_";
 	private static final String KEY_STAT_BEST = "best_";
 	private static final String KEY_STAT_XP = "xpTenths_";
+	private static final String KEY_STAT_POLES = "poles_";
 	private static final String KEY_ACHIEVEMENTS = "achievements";
 	private static final String KEY_ACHIEVEMENTS_DEBUG = "achievementsDebug";
 	private static final String KEY_STREAK = "streak_";
@@ -69,6 +92,27 @@ public class TrappyChinchompaPlugin extends Plugin
 	@Named("developerMode")
 	private boolean developerMode;
 
+	@Inject
+	private Client client;
+
+	@Inject
+	private ChatMessageManager chatMessageManager;
+
+	@Inject
+	private OkHttpClient okHttpClient;
+
+	@Inject
+	private ScheduledExecutorService executor;
+
+	private DuelController duels;
+	private DuelChat duelChat;
+	private ScheduledFuture<?> duelTicker;
+	/** Read on the client thread by the right-click menu. */
+	private volatile String pendingChallenger;
+	private volatile boolean duelIdle;
+	/** Set once we have asked the relay to connect for this login. */
+	private volatile boolean relayRequested;
+
 	private TrappyChinchompaPanel panel;
 	private NavigationButton navButton;
 
@@ -92,7 +136,289 @@ public class TrappyChinchompaPlugin extends Plugin
 			.panel(panel)
 			.build();
 		clientToolbar.addNavigation(navButton);
+		startDuels();
 		checkLoadoutLab();
+	}
+
+	private void startDuels()
+	{
+		duels = new DuelController(config.relayUrl(), new OkHttpSocket(okHttpClient), SwingUtilities::invokeLater,
+			(delayMs, task) -> executor.schedule(() -> SwingUtilities.invokeLater(task), delayMs, TimeUnit.MILLISECONDS),
+			this::isDuelBlocked, this::duelNotice, this::onDuelChanged, this::onDuelReady, this::blockedNames);
+		duelChat = new DuelChat(client, new DuelChat.Actions()
+		{
+			@Override
+			public String pendingChallenger()
+			{
+				return pendingChallenger;
+			}
+
+			@Override
+			public boolean canChallenge()
+			{
+				return duelIdle;
+			}
+
+			@Override
+			public void challengeFromChat(String name)
+			{
+				if (duels != null)
+				{
+					duels.challenge(name, defaultRules());
+				}
+			}
+
+			@Override
+			public void acceptFromChat()
+			{
+				if (duels != null)
+				{
+					duels.accept();
+				}
+			}
+
+			@Override
+			public void declineFromChat()
+			{
+				if (duels != null)
+				{
+					duels.decline();
+				}
+			}
+		});
+		duelTicker = executor.scheduleAtFixedRate(() -> SwingUtilities.invokeLater(() ->
+		{
+			if (duels != null)
+			{
+				duels.tick(System.currentTimeMillis());
+			}
+		}), 1, 1, TimeUnit.SECONDS);
+		relayRequested = false;
+	}
+
+	private void stopDuels()
+	{
+		if (duelTicker != null)
+		{
+			duelTicker.cancel(false);
+			duelTicker = null;
+		}
+		final DuelController d = duels;
+		duels = null;
+		duelChat = null;
+		pendingChallenger = null;
+		duelIdle = false;
+		relayRequested = false;
+		if (d != null)
+		{
+			SwingUtilities.invokeLater(d::disconnect);
+		}
+	}
+
+	/** The relay URL changed: rebuild on the EDT. */
+	private void restartDuels()
+	{
+		SwingUtilities.invokeLater(() ->
+		{
+			if (duels != null)
+			{
+				duels.disconnect();
+			}
+			if (duelTicker != null)
+			{
+				duelTicker.cancel(false);
+			}
+			if (panel != null)
+			{
+				startDuels();
+			}
+		});
+	}
+
+	private DuelRules defaultRules()
+	{
+		return new DuelRules(config.difficulty(), DuelRules.Metric.BEST_ROUND, 3);
+	}
+
+	private void onDuelChanged()
+	{
+		final DuelController d = duels;
+		pendingChallenger = d == null ? null : d.pendingChallenger();
+		duelIdle = d != null && d.isOnline() && d.getPhase() == DuelController.Phase.IDLE;
+		announceSettled();
+		if (panel != null)
+		{
+			panel.repaintGame();
+		}
+	}
+
+	/** One chatbox line per settled duel, only this client sees it. */
+	private void announceSettled()
+	{
+		final DuelController d = duels;
+		if (d == null)
+		{
+			return;
+		}
+		for (DuelRecord r : d.freshlySettled())
+		{
+			if (r.getRules() != null)
+			{
+				postDuelChat(DuelResultText.chatLine(r.outcome(), r.getMe(), r.getOpponent(), r.getRules()));
+			}
+		}
+	}
+
+	public DuelController getDuels()
+	{
+		return duels;
+	}
+
+	/** Developer toggles and duels do not mix: no invincible or unlock-all duels. */
+	public boolean isDuelBlocked()
+	{
+		return UnlockState.isDevUnlockAll() || (panel != null && panel.isSandbox());
+	}
+
+	/** The challenge form was confirmed (EDT). */
+	public void challengeDuel(String them, DuelRules rules)
+	{
+		if (duels != null)
+		{
+			duels.challenge(them, rules);
+		}
+	}
+
+	/** The relay revealed the seed for the game the player pressed Play on. */
+	private void onDuelReady(DuelRecord record)
+	{
+		if (panel != null)
+		{
+			panel.playNow(record);
+		}
+	}
+
+	private java.util.Set<String> blockedNames()
+	{
+		final java.util.Set<String> out = new java.util.HashSet<>();
+		for (String n : config.duelBlocked().split(","))
+		{
+			if (!n.trim().isEmpty())
+			{
+				out.add(n.trim());
+			}
+		}
+		return out;
+	}
+
+	/** Compete: one game at this difficulty against whoever is next in the queue. */
+	public void competeDuel(Difficulty difficulty)
+	{
+		if (duels != null)
+		{
+			duels.compete(new DuelRules(difficulty, DuelRules.Metric.BEST_ROUND, 1));
+		}
+	}
+
+	@Subscribe
+	public void onMenuEntryAdded(MenuEntryAdded event)
+	{
+		if (duelChat != null)
+		{
+			duelChat.onMenuEntryAdded(event);
+		}
+	}
+
+	/** ::duel <player> trappy [games] [style] [difficulty], or ::duel accept | no | gg. Never reaches the game. */
+	@Subscribe
+	public void onCommandExecuted(CommandExecuted event)
+	{
+		if (duels == null || !"duel".equalsIgnoreCase(event.getCommand()))
+		{
+			return;
+		}
+		final DuelCommand cmd = DuelCommand.parse(event.getArguments(), config.difficulty());
+		SwingUtilities.invokeLater(() ->
+		{
+			final DuelController d = duels;
+			if (d == null)
+			{
+				return;
+			}
+			switch (cmd.getKind())
+			{
+				case CHALLENGE:
+					d.challenge(cmd.getPlayer(), cmd.getRules());
+					break;
+				case ACCEPT:
+					if (!d.accept())
+					{
+						duelNotice("No challenge is waiting.");
+					}
+					break;
+				case DECLINE:
+					d.cancel();
+					break;
+				case CONCEDE:
+					d.concedeCurrent();
+					break;
+				case USAGE:
+					duelNotice(DuelCommand.USAGE);
+					break;
+				case NOT_OURS:
+				default:
+					break;
+			}
+		});
+	}
+
+	/** Duels on and logged in: connect under the player's name (once). */
+	@Subscribe
+	public void onGameTick(GameTick event)
+	{
+		if (duels == null || relayRequested || !config.duelsEnabled() || client.getGameState() != GameState.LOGGED_IN)
+		{
+			return;
+		}
+		final Player me = client.getLocalPlayer();
+		final long hash = client.getAccountHash();
+		if (me == null || me.getName() == null || hash == -1L)
+		{
+			return;
+		}
+		relayRequested = true;
+		final String name = Text.toJagexName(me.getName());
+		final String account = com.trappychinchompa.duel.Hashes.account(hash);
+		final boolean hidden = config.duelHidden();
+		// Developer mode: two clients on one machine may pair, and nothing they play counts.
+		final boolean dev = developerMode;
+		final DuelController d = duels;
+		SwingUtilities.invokeLater(() -> d.connect(name, account, hidden, dev));
+	}
+
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged event)
+	{
+		if (event.getGameState() == GameState.LOGIN_SCREEN && duels != null)
+		{
+			relayRequested = false;
+			final DuelController d = duels;
+			SwingUtilities.invokeLater(d::disconnect);
+		}
+	}
+
+	/** A line only this client sees, in the chatbox. Safe from any thread. */
+	public void postDuelChat(String line)
+	{
+		chatMessageManager.queue(QueuedMessage.builder()
+			.type(ChatMessageType.GAMEMESSAGE)
+			.runeLiteFormattedMessage(line)
+			.build());
+	}
+
+	private void duelNotice(String text)
+	{
+		postDuelChat("Trappy: " + text);
 	}
 
 	/**
@@ -145,6 +471,7 @@ public class TrappyChinchompaPlugin extends Plugin
 	@Override
 	protected void shutDown()
 	{
+		stopDuels();
 		clientToolbar.removeNavigation(navButton);
 		if (panel != null)
 		{
@@ -161,6 +488,23 @@ public class TrappyChinchompaPlugin extends Plugin
 		{
 			// ConfigChanged can fire on any thread; only ours matter here.
 			return;
+		}
+		if ("duelsEnabled".equals(event.getKey()) && !config.duelsEnabled() && duels != null)
+		{
+			relayRequested = false;
+			final DuelController d = duels;
+			SwingUtilities.invokeLater(d::disconnect);
+		}
+		else if ("relayUrl".equals(event.getKey()))
+		{
+			restartDuels();
+		}
+		else if ("duelHidden".equals(event.getKey()) && duels != null)
+		{
+			// Reconnect so the relay hears the new hidden flag.
+			relayRequested = false;
+			final DuelController d = duels;
+			SwingUtilities.invokeLater(d::disconnect);
 		}
 		publishUnlockState();
 		final TrappyChinchompaPanel p = panel;
@@ -230,6 +574,7 @@ public class TrappyChinchompaPlugin extends Plugin
 		{
 			keys.add(KEY_STAT_RUNS + d.name());
 			keys.add(KEY_STAT_BEST + d.name());
+			keys.add(KEY_STAT_POLES + d.name());
 			keys.add(KEY_STAT_XP + d.name());
 			for (int threshold : Achievement.STREAK_THRESHOLDS)
 			{
@@ -446,7 +791,9 @@ public class TrappyChinchompaPlugin extends Plugin
 			loadInt(KEY_STAT_RUNS + difficulty.name()),
 			loadInt(KEY_STAT_BEST + difficulty.name()),
 			MoreObjects.firstNonNull(configManager.getConfiguration(TrappyChinchompaConfig.GROUP,
-				KEY_STAT_XP + difficulty.name(), Long.class), 0L));
+				KEY_STAT_XP + difficulty.name(), Long.class), 0L),
+			MoreObjects.firstNonNull(configManager.getConfiguration(TrappyChinchompaConfig.GROUP,
+				KEY_STAT_POLES + difficulty.name(), Long.class), 0L));
 	}
 
 	/**
@@ -492,6 +839,11 @@ public class TrappyChinchompaPlugin extends Plugin
 		{
 			configManager.setConfiguration(TrappyChinchompaConfig.GROUP,
 				KEY_STAT_XP + difficulty.name(), String.valueOf(stats.getXpTenths() + runXp));
+		}
+		if (score > 0)
+		{
+			configManager.setConfiguration(TrappyChinchompaConfig.GROUP,
+				KEY_STAT_POLES + difficulty.name(), String.valueOf(stats.getPoles() + score));
 		}
 
 		final int levelBefore = HunterXp.levelForXpTenths(before);

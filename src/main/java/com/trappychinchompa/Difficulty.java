@@ -13,20 +13,26 @@ import com.trappychinchompa.game.FlappyGame;
  */
 public enum Difficulty
 {
-	EASY(130, 1.6, 1, false),
-	NORMAL(110, 1.9, 10, true),
-	HARD(90, 2.3, 25, true);
+	EASY(130, 1.6, 200, 1, false),
+	NORMAL(110, 1.9, 170, 10, true),
+	HARD(90, 2.3, 95, 25, true);
 
 	private final int gapSize;
 	private final double speed;
+	/** Max travel of the gap centre between consecutive traps. Tighter as
+	 * speed rises - Hard leaves the fewest ticks to change altitude, so its
+	 * gaps wander the least. */
+	private final int maxGapStep;
 	/** XP multiplier in tenths: 1 = x0.1, 10 = x1, 25 = x2.5. */
 	private final int xpMultTenths;
 	private final boolean countsForRecords;
 
-	Difficulty(int gapSize, double speed, int xpMultTenths, boolean countsForRecords)
+	Difficulty(int gapSize, double speed, int maxGapStep, int xpMultTenths,
+		boolean countsForRecords)
 	{
 		this.gapSize = gapSize;
 		this.speed = speed;
+		this.maxGapStep = maxGapStep;
 		this.xpMultTenths = xpMultTenths;
 		this.countsForRecords = countsForRecords;
 	}
@@ -39,6 +45,11 @@ public enum Difficulty
 	public double getSpeed()
 	{
 		return speed;
+	}
+
+	public int getMaxGapStep()
+	{
+		return maxGapStep;
 	}
 
 	/** Whether runs at this difficulty can set the high score. */

@@ -2,7 +2,9 @@ package com.trappychinchompa.ui;
 
 import com.trappychinchompa.TrappyChinchompaConfig;
 import com.trappychinchompa.TrappyChinchompaPlugin;
+import java.awt.BorderLayout;
 import java.awt.CardLayout;
+import javax.swing.JPanel;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.SpriteManager;
 import net.runelite.client.ui.PluginPanel;
@@ -18,7 +20,9 @@ public class TrappyChinchompaPanel extends PluginPanel
 	private static final String CARD_ACHIEVEMENTS = "achievements";
 
 	private final CardLayout cards = new CardLayout();
+	private final TrappyChinchompaPlugin plugin;
 	private final GameCanvas canvas;
+	private final DuelDock dock;
 	private final AchievementsPanel achievements;
 	private boolean active;
 	private boolean showingAchievements;
@@ -27,10 +31,15 @@ public class TrappyChinchompaPanel extends PluginPanel
 		SpriteManager spriteManager, TrappyChinchompaConfig config)
 	{
 		super(false);
+		this.plugin = plugin;
 		setLayout(cards);
 		canvas = new GameCanvas(plugin, itemManager, spriteManager, config);
+		dock = new DuelDock(plugin::getDuels, config::difficulty, plugin::challengeDuel, plugin::competeDuel, this::playDuel, this::focusGame);
 		achievements = new AchievementsPanel(plugin, this::showGame);
-		add(canvas, CARD_GAME);
+		final JPanel game = new JPanel(new BorderLayout());
+		game.add(canvas, BorderLayout.CENTER);
+		game.add(dock, BorderLayout.SOUTH);
+		add(game, CARD_GAME);
 		add(achievements, CARD_ACHIEVEMENTS);
 	}
 
@@ -88,6 +97,46 @@ public class TrappyChinchompaPanel extends PluginPanel
 		{
 			achievements.refresh();
 		}
+	}
+
+	/** The dock's Play: the duel's next game on the canvas, once the relay has revealed its seed. */
+	public void playDuel(String id)
+	{
+		final com.trappychinchompa.duel.DuelRecord r = plugin.getDuels() == null ? null : plugin.getDuels().play(id);
+		if (r != null)
+		{
+			playNow(r);
+		}
+	}
+
+	public void playNow(com.trappychinchompa.duel.DuelRecord r)
+	{
+		showGame();
+		canvas.startDuelGame(r);
+	}
+
+	/** A short floating word on the canvas. */
+	public void duelNotice(String text)
+	{
+		canvas.notice(text);
+	}
+
+	public void repaintGame()
+	{
+		dock.refresh();
+		canvas.repaint();
+	}
+
+	/** Keys go to the game after any dock button. */
+	public void focusGame()
+	{
+		canvas.requestFocusInWindow();
+	}
+
+	/** Trap invincibility on: the integrity gate for duels. */
+	public boolean isSandbox()
+	{
+		return canvas.isSandbox();
 	}
 
 	public void dispose()

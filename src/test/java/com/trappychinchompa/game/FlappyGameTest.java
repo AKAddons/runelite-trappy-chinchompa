@@ -22,7 +22,7 @@ class FlappyGameTest
 	{
 		game = new FlappyGame(new Random(42));
 		game.setViewport(W, H);
-		game.setDifficulty(110, 1.9);
+		game.setDifficulty(110, 1.9, FlappyGame.GAP_BAND_HEIGHT);
 	}
 
 	private void tick(int n)
@@ -337,5 +337,36 @@ class FlappyGameTest
 			game.flap();
 		}
 		game.tick();
+	}
+
+	@Test
+	@DisplayName("consecutive gap centres never travel further than the difficulty's step")
+	void gapCentresRespectMaxStep()
+	{
+		final int step = 95;
+		game.setDifficulty(90, 2.3, step);
+		game.setTrapInvincible(true);
+		game.flap();
+		int previous = -1;
+		int checked = 0;
+		for (int i = 0; i < 30_000 && checked < 200; i++)
+		{
+			// Hug the canopy: bumps don't kill, so the run never ends.
+			game.flap();
+			game.tick();
+			if (game.getTraps().isEmpty())
+			{
+				continue;
+			}
+			final int newest = game.getTraps().get(game.getTraps().size() - 1).getGapCenter();
+			if (previous >= 0 && newest != previous)
+			{
+				assertTrue(Math.abs(newest - previous) <= step,
+					"step of " + Math.abs(newest - previous) + " exceeds " + step);
+				checked++;
+			}
+			previous = newest;
+		}
+		assertTrue(checked >= 200, "saw enough spawns to trust the property");
 	}
 }

@@ -1,5 +1,6 @@
 package com.trappychinchompa;
 
+import com.trappychinchompa.game.FlappyGame;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -66,5 +67,19 @@ class DifficultyTest
 		assertFalse(Difficulty.EASY.countsForRecords(), "easy is the practice pond");
 		assertTrue(Difficulty.NORMAL.countsForRecords());
 		assertTrue(Difficulty.HARD.countsForRecords());
+	}
+
+	@Test
+	@DisplayName("gap travel tightens as speed rises - hard wanders the least by far")
+	void maxGapStepOrdering()
+	{
+		assertTrue(Difficulty.EASY.getMaxGapStep() > Difficulty.NORMAL.getMaxGapStep());
+		assertTrue(Difficulty.NORMAL.getMaxGapStep() > Difficulty.HARD.getMaxGapStep());
+		assertTrue(Difficulty.HARD.getMaxGapStep() <= 100, "hard stays close to followable");
+		for (Difficulty d : Difficulty.values())
+		{
+			assertTrue(d.getMaxGapStep() < FlappyGame.GAP_BAND_HEIGHT,
+				d + " constrains the roll below the free band");
+		}
 	}
 }

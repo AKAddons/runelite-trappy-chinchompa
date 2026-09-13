@@ -3,6 +3,7 @@ package com.trappychinchompa;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.ConfigSection;
 
 /**
  * Deliberately small: critter and zone are chosen from the pickers on the
@@ -35,5 +36,60 @@ public interface TrappyChinchompaConfig extends Config
 	default boolean showXpDrops()
 	{
 		return true;
+	}
+
+	@ConfigSection(
+		name = "Duels",
+		description = "Challenge friends to the same traps on the same seed",
+		position = 10
+	)
+	String duels = "duels";
+
+	@ConfigItem(
+		keyName = "duelsEnabled",
+		name = "Enable duels",
+		description = "Connects to the AKAddons relay and sends your display name so friends can challenge you. Nothing else is sent and nothing is stored.",
+		section = duels,
+		position = 11
+	)
+	default boolean duelsEnabled()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "relayUrl",
+		name = "Relay URL",
+		description = "The duel relay to connect to. Leave it alone unless you run your own.",
+		section = duels,
+		position = 12
+	)
+	default String relayUrl()
+	{
+		return "wss://akaddons-relay.akaddons-relay.workers.dev/ws";
+	}
+
+	@ConfigItem(
+		keyName = "duelHidden",
+		name = "Hide me from top scores",
+		description = "Play duels and compete, but keep your name off the top-scores board and rankings.",
+		section = duels,
+		position = 13
+	)
+	default boolean duelHidden()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "duelBlocked",
+		name = "Block challenges from",
+		description = "Player names, separated by commas. Their challenges are declined without a word.",
+		section = duels,
+		position = 14
+	)
+	default String duelBlocked()
+	{
+		return "";
 	}
 }
