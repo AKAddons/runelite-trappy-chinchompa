@@ -25,7 +25,7 @@ class DuelControllerTest
 	private int changes;
 
 	private final DuelController c = new DuelController("wss://relay.test/ws", socket, Runnable::run, (d, task) -> { },
-		() -> blocked, notices::add, () -> changes++, ready::add, () -> blockList);
+		() -> blocked, notices::add, () -> changes++, ready::add, () -> blockList, new com.google.gson.Gson());
 
 	private static Map<String, Object> map(Object... kv)
 	{

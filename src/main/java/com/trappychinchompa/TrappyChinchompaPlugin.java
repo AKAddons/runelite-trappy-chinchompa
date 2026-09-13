@@ -74,6 +74,9 @@ public class TrappyChinchompaPlugin extends Plugin
 	private ClientToolbar clientToolbar;
 
 	@Inject
+	private com.google.gson.Gson gson;
+
+	@Inject
 	private ItemManager itemManager;
 
 	@Inject
@@ -144,7 +147,7 @@ public class TrappyChinchompaPlugin extends Plugin
 	{
 		duels = new DuelController(config.relayUrl(), new OkHttpSocket(okHttpClient), SwingUtilities::invokeLater,
 			(delayMs, task) -> executor.schedule(() -> SwingUtilities.invokeLater(task), delayMs, TimeUnit.MILLISECONDS),
-			this::isDuelBlocked, this::duelNotice, this::onDuelChanged, this::onDuelReady, this::blockedNames);
+			this::isDuelBlocked, this::duelNotice, this::onDuelChanged, this::onDuelReady, this::blockedNames, gson);
 		duelChat = new DuelChat(client, new DuelChat.Actions()
 		{
 			@Override

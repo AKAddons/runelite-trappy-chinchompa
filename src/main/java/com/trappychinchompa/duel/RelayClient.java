@@ -86,7 +86,8 @@ public final class RelayClient
 	private final Executor callbacks;
 	private final Scheduler scheduler;
 	private final Lobby lobby;
-	private final Gson gson = new Gson();
+	/** The client's Gson (the hub forbids fresh instances). */
+	private final Gson gson;
 
 	private String name;
 	private String game;
@@ -100,8 +101,9 @@ public final class RelayClient
 	/** Bumped on every dial so a stale socket's late events are ignored. */
 	private int generation;
 
-	public RelayClient(String url, Socket socket, Executor callbacks, Scheduler scheduler, Lobby lobby)
+	public RelayClient(String url, Socket socket, Executor callbacks, Scheduler scheduler, Lobby lobby, Gson gson)
 	{
+		this.gson = gson;
 		this.url = url;
 		this.socket = socket;
 		this.callbacks = callbacks;

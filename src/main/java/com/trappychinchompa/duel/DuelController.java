@@ -59,9 +59,10 @@ public final class DuelController implements RelayClient.Lobby
 	private boolean devBoards;
 
 	public DuelController(String relayUrl, RelayClient.Socket socket, Executor callbacks, RelayClient.Scheduler scheduler,
-		BooleanSupplier blocked, Consumer<String> notice, Runnable changed, Consumer<DuelRecord> ready, Supplier<Set<String>> blockList)
+		BooleanSupplier blocked, Consumer<String> notice, Runnable changed, Consumer<DuelRecord> ready, Supplier<Set<String>> blockList,
+		com.google.gson.Gson gson)
 	{
-		this.relay = new RelayClient(relayUrl, socket, callbacks, scheduler, this);
+		this.relay = new RelayClient(relayUrl, socket, callbacks, scheduler, this, gson);
 		this.blocked = blocked;
 		this.notice = notice;
 		this.changed = changed;

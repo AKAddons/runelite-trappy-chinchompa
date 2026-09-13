@@ -114,7 +114,7 @@ class RelayClientTest
 	private final Recorder lobby = new Recorder();
 	private final List<Long> delays = new ArrayList<>();
 	private final RelayClient client = new RelayClient("wss://relay.test/ws", socket, Runnable::run,
-		(delayMs, task) -> delays.add(delayMs), lobby);
+		(delayMs, task) -> delays.add(delayMs), lobby, new com.google.gson.Gson());
 
 	private String last(List<String> l)
 	{
