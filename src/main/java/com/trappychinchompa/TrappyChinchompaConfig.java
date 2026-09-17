@@ -48,7 +48,8 @@ public interface TrappyChinchompaConfig extends Config
 	@ConfigItem(
 		keyName = "duelsEnabled",
 		name = "Enable duels",
-		description = "Connects to the AKAddons relay and sends your display name so friends can challenge you. Nothing else is sent and nothing is stored.",
+		description = "Connects to the AKAddons relay while you are logged in: it receives your display name, a hash of your account id, your duel scores and runs, and sees your address like any server. Off, nothing connects.",
+		warning = "This plugin submits your IP address, and may submit various account data, to a 3rd-party server not controlled or verified by Runelite developers.",
 		section = duels,
 		position = 11
 	)
