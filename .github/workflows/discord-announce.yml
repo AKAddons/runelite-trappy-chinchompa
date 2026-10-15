@@ -20,4 +20,6 @@ jobs:
     with:
       project_name: "Trappy Chinchompa"
       project_description: "Level OSRS's newest skill: Anti-Hunter! Flappy-style RuneLite sidebar minigame - you are the chinchompa, the pipes are box traps."
-    secrets: inherit
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
